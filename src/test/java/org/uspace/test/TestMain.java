@@ -1,6 +1,7 @@
 package org.uspace.test;
 
 import org.uspace.config.FileSafetyTests;
+import org.uspace.test.DiscoveryTests;
 
 /**
  * Entry point for {@code ./build.sh test}.
@@ -14,7 +15,7 @@ public final class TestMain {
     }
 
     public static void main(String[] args) {
-        System.out.println("UserSpace persistence, settings and locking tests");
+        System.out.println("UserSpace persistence, settings, locking and discovery tests");
         TestRunner runner = new TestRunner();
         SerializationTests.register(runner);
         StoreTests.register(runner);
@@ -23,6 +24,7 @@ public final class TestMain {
         LockTests.register(runner);
         FileSafetyTests.register(runner);
         ConcurrencyTests.register(runner);
+        DiscoveryTests.register(runner);
         System.exit(runner.report());
     }
 }

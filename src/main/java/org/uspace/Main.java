@@ -5,9 +5,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import org.uspace.config.ApplicationStore;
 import org.uspace.config.ConfigException;
 import org.uspace.config.MetadataIssue;
@@ -16,25 +18,34 @@ import org.uspace.config.SettingsLoad;
 import org.uspace.config.SettingsStore;
 import org.uspace.core.model.Application;
 import org.uspace.core.registry.ApplicationRegistry;
+import org.uspace.discovery.DiscoveryCandidate;
+import org.uspace.discovery.DiscoveryIssue;
+import org.uspace.discovery.DiscoveryResult;
+import org.uspace.discovery.DiscoveryScanner;
 import org.uspace.system.FileMutex;
 import org.uspace.system.XdgDirectories;
 
 /**
  * Composition root and entry point.
  *
- * <p>Milestones M0–M2: verify privileges, prepare the layout, load settings, take the single-instance
- * lock and load the registry, then report what was found. The Swing window, discovery and the
- * integration pipeline are wired here in later milestones — this class is the single place allowed to
- * know about every package.
+ * <p>Milestones M0–M3: verify privileges, prepare the layout, load settings, take the single-instance
+ * lock, load the registry, and — only when asked with {@code --scan} — walk the configured roots and
+ * print what discovery proposes. The Swing window and the integration pipeline are wired here in
+ * later milestones; this class is the single place allowed to know about every package.
+ *
+ * <p>Discovery is opt-in rather than part of startup: a scan of a real home directory can take
+ * seconds, and a program that searches the disk every time it is launched is a program people stop
+ * launching.
  *
  * <p>Exit codes: {@code 0} success, {@code 1} layout or IO failure, {@code 2} run as root, {@code 3}
- * another instance already holds the lock.
+ * another instance already holds the lock, {@code 64} unknown command-line option.
  */
 public final class Main {
 
     private static final int EXIT_IO = 1;
     private static final int EXIT_ROOT = 2;
     private static final int EXIT_ALREADY_RUNNING = 3;
+    private static final int EXIT_USAGE = 64;
 
     private Main() {
     }
@@ -46,6 +57,23 @@ public final class Main {
                     It manages only files inside your home directory; running it as root would create \
                     root-owned files that you could no longer manage as yourself.""");
             System.exit(EXIT_ROOT);
+        }
+
+        boolean scanRequested = false;
+        for (String argument : args) {
+            switch (argument) {
+                case "--scan" -> scanRequested = true;
+                case "--help", "-h" -> {
+                    printUsage();
+                    return;
+                }
+                default -> {
+                    System.err.println("Unknown option: " + argument);
+                    printUsage();
+                    System.exit(EXIT_USAGE);
+                    return;
+                }
+            }
         }
 
         XdgDirectories dirs = XdgDirectories.current();
@@ -124,7 +152,70 @@ public final class Main {
             System.out.println("Unreadable registrations (left untouched):");
             reportIssues(registry.loadIssues());
         }
+
+        if (scanRequested) {
+            runDiscovery(dirs, settings, registry);
+        }
         System.out.println("See ARCHITECTURE.md for the package plan, dependency map and roadmap.");
+    }
+
+    /**
+     * Runs M3 discovery and prints what it proposes. Nothing is registered: the output is a review
+     * list, and the registry is only read to avoid proposing what is already there.
+     */
+    private static void runDiscovery(XdgDirectories dirs, Settings settings, ApplicationRegistry registry) {
+        System.out.println();
+        if (settings.scanRoots().isEmpty()) {
+            System.out.println("Discovery — no scan roots configured.");
+            System.out.printf("  add directories to %s (scan.root.0=…) and run --scan again.%n",
+                    new SettingsStore(dirs.configDir()).file());
+            return;
+        }
+
+        // The JVM running this process is the interpreter recorded for discovered jars. Inside the
+        // packaged app-image that is the bundled runtime, which is exactly what we want to ship.
+        Path javaExecutable = Path.of(System.getProperty("java.home"), "bin", "java");
+        Set<Path> known = registry.all().stream()
+                .map(application -> application.launch().executable())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        long started = System.nanoTime();
+        DiscoveryResult result = new DiscoveryScanner(dirs, javaExecutable)
+                .scan(settings.scanRoots(), known, () -> false);
+        long millis = (System.nanoTime() - started) / 1_000_000;
+
+        System.out.printf("Discovery — %d root(s), %d file(s) inspected in %d director(ies), %d ms%n",
+                settings.scanRoots().size(), result.filesInspected(), result.directoriesVisited(), millis);
+        if (result.truncated()) {
+            System.out.printf("  ! candidate list stopped at %d; scan a narrower root%n", result.candidateCount());
+        }
+        for (DiscoveryCandidate candidate : result.candidates()) {
+            System.out.printf("  %-24s %-9s %-6s %s%n",
+                    candidate.id(), candidate.application().type(), candidate.confidence().label(),
+                    candidate.executable());
+            System.out.printf("      why: %s%n", candidate.reason());
+        }
+        if (result.candidates().isEmpty() && result.issues().isEmpty()) {
+            System.out.println("  nothing found in those roots");
+        }
+        if (!result.issues().isEmpty()) {
+            System.out.printf("  %d path(s) could not be used:%n", result.issues().size());
+            for (DiscoveryIssue issue : result.issues()) {
+                System.out.printf("  ! %s%n", issue);
+            }
+        }
+        System.out.println("Nothing was registered: these are proposals to review.");
+    }
+
+    private static void printUsage() {
+        System.out.println("""
+                usage: userspace [--scan] [--help]
+
+                  (no option)  report the layout, settings and registered applications
+                  --scan       scan the configured roots and list proposed applications
+                  --help       this text
+
+                A scan never registers anything; candidates are proposals for review.""");
     }
 
     private static void reportIssues(List<MetadataIssue> issues) {

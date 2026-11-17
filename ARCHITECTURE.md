@@ -292,9 +292,11 @@ Startup (`Main`):
 4. Load `Settings`, falling back to defaults and reporting issues. **Implemented.**
 5. Load the registry: parse every `apps/*/meta.properties`, tolerate and report malformed ones instead
    of failing the start. **Implemented** — `Main` prints the count and each issue.
-6. Show the window with the loaded list; health checks run on a `SwingWorker` and repaint rows as they
+6. With `--scan`, walk the configured roots and print proposals. Nothing is registered. **Implemented
+   (M3)** — see the discovery pipeline below §5.
+7. Show the window with the loaded list; health checks run on a `SwingWorker` and repaint rows as they
    resolve. *Not implemented (M6 for the checks, UI milestone for the window).*
-7. Log to `$XDG_STATE_HOME/userspace/logs/`, never to stdout only. *Not implemented.*
+8. Log to `$XDG_STATE_HOME/userspace/logs/`, never to stdout only. *Not implemented.*
 
 Package-launch → `Application` (slug), then:
 
@@ -331,6 +333,30 @@ and a small log ring buffer; it is a convenience, not the main path (the wrapper
 
 Removal is the integration pipeline in reverse: delete artifacts (only those listed in
 `integration.properties`), then the app directory. Files we did not create are never touched.
+
+**Discovery (M3)** is opt-in (`--scan`) rather than part of startup: a walk of a real home directory
+costs seconds, and a tool that searches the disk every time it opens is a tool people stop opening.
+The pipeline is `walk → classify → propose`, and it stops there — nothing reaches the registry:
+
+```
+settings.scanRoots ──> DiscoveryScanner     bounded walk: max depth, no symlinks, own dirs excluded,
+                          │                 cancellable, known executables skipped and reported
+                          ├─ FileClassifier  AppImage magic | ELF | AppRun tree | jar Main-Class | .desktop
+                          ↓
+                     DiscoveryResult        candidates (confidence + reason) and issues
+```
+
+Two decisions are load-bearing. The scanner receives the already-registered executables as an
+argument instead of importing `core.registry`, because `discovery` may depend on `core.model` and
+`system` only; the reverse edge would let the walker read the thing it is supposed to be proposing
+changes to. And every refusal is an issue rather than a silence — an unreadable directory, a jar
+without `Main-Class`, an `Exec` that needs quoting — because a scan that quietly returns one fewer
+candidate is indistinguishable from a broken scan.
+
+`FileClassifier` returns a `Proposal` with no identity: the scan owns ids (unique within the run,
+slugged from the display name), the origin string and the timestamp. That split is what keeps
+classification a pure "look at these bytes and say what this is" step with no clock reads and no slug
+allocation.
 
 ## 6. Dependency map
 
@@ -375,7 +401,7 @@ serializable and testable; `integration` never talks to `ui`, so it can be reuse
 | M1 ✅ | Model + config round-trip + registry persistence | `Application` ↔ `meta.properties` survives a round-trip test with spaces/`=`/unicode; registry survives a restart; 33 tests green |
 | M2 ✅ | Settings + cross-process write lock | `settings.properties` round-trips with fallbacks; a second process is refused or serialized; three processes racing on the same ids register each id exactly once |
 | M2b | Inode equality | two paths to the same inode cannot register twice (currently real-path identity only) |
-| M3 | Discovery | scans roots, finds AppImages + ELF binaries + `*.jar` with wrapper guess, reports candidates, registers zero duplicates |
+| M3 ✅ | Discovery | `--scan` finds AppImages, ELF binaries, `AppRun` trees, runnable jars and simple `.desktop` entries; 18 cases cover depth, symlink loops, unreadable directories and cancellation; zero registrations |
 | M4 | Desktop integration | `.desktop` passes `desktop-file-validate`, appears in the menu after logout/login, icon shows |
 | M5 | Shell integration | wrapper + `~/.local/bin` symlink; PATH presence probed and reported, never assumed |
 | M6 | Health checks + repair | broken registrations surface in the table with a repair action |

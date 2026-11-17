@@ -8,9 +8,10 @@ otherwise do by hand — keep a registry of what is installed, generate `.deskto
 wrappers and `PATH` links, manage per-application environment variables, and detect broken
 installations — while touching nothing outside your home directory.
 
-**Status: milestones M0–M2 and packaging (M8) are implemented.** There is no GUI yet; the project is
-a compiling, tested persistence and locking foundation that ships as a relocatable directory with its
-own runtime. Discovery, desktop/shell integration and undo come next. See
+**Status: milestones M0–M3 and packaging (M8) are implemented.** The tool registers applications,
+keeps them in crash-safe property files under a cross-process lock, finds new ones by scanning the
+directories you point it at, and ships as a relocatable directory with its own runtime. There is no GUI
+and no integration yet: desktop/shell launchers and undo are next. See
 [current step.md](current%20step.md) for exactly what is done and what is next, and
 [ARCHITECTURE.md](ARCHITECTURE.md) for the design.
 
@@ -19,16 +20,28 @@ own runtime. Discovery, desktop/shell integration and undo come next. See
 Only a JDK (17 or newer) is required. No Maven, no Gradle, no downloads.
 
 ```bash
-./build.sh          # compile + build/userspace.jar
-./build.sh run      # compile + run
-./build.sh test     # compile + run the test suite (no root, no display needed)
-./build.sh package  # app-image in build/dist/UserSpace, then verify it
-./build.sh deb      # optional .deb for maintainers (needs dpkg-deb + fakeroot)
+./build.sh                              # compile + build/userspace.jar
+./build.sh run                          # compile + run
+./build.sh test                         # compile + run the test suite (no root, no display needed)
+./build.sh package                      # app-image in build/dist/UserSpace, then verify it
+./build.sh deb                          # optional .deb for maintainers (needs dpkg-deb + fakeroot)
+java -jar build/userspace.jar --scan    # discovery: list proposed applications
 ./build.sh clean
 ```
 
 The build targets `--release 17`, so the artifact runs on Debian 12 (Java 17) as well as on newer
 JDKs.
+
+### Finding applications
+
+`--scan` walks the roots listed in `settings.properties` (`scan.root.0=…`) and prints what it
+recognises: AppImages by their magic bytes, ELF binaries, extracted trees that contain `AppRun`,
+jars with a `Main-Class`, and simple `.desktop` files. Each proposal carries a confidence and a reason,
+and **nothing is registered** — the point is a reviewable list, not a `find`-and-commit.
+
+The walk is bounded in depth, never follows symlinks, skips UserSpace's own directories, and can be
+cancelled. Anything it could not use — an unreadable directory, a jar without `Main-Class`, an
+`Exec` that needs quoting — is reported rather than silently dropped.
 
 ### The packaged artifact
 
@@ -66,6 +79,7 @@ No frameworks, no dependency injection, no interfaces without a second implement
 | [current step.md](current%20step.md) | where the implementation stands and what to do next |
 | [VERIFICATION-M1.md](VERIFICATION-M1.md) | what persistence was verified to do, and what was not tested |
 | [VERIFICATION-M2.md](VERIFICATION-M2.md) | settings and locking verification, including the negative controls |
+| [VERIFICATION-M3.md](VERIFICATION-M3.md) | discovery verification: the recognised kinds, the refusals, and the controls that prove they fail |
 | [VERIFICATION-M8.md](VERIFICATION-M8.md) | packaging verification: the nine artifact checks, the controls that prove they can fail |
 
 ## Layout at runtime
