@@ -272,12 +272,8 @@ registry silently overwrites the other — proven by a negative-control run reco
 
 `integration.properties`, the journal and undo (M7). Cross-process duplicate detection by
 **executable path** is also still in-memory only: it would need a full re-scan of `apps/` inside every
-write, which is not worth it while a single instance holds the lifetime lock.
-
-**Reversibility:** before any integration write, `IntegrationApplier` copies each pre-image into
-`journal/<op-id>/` with a manifest. "Undo last change" replays it backwards. Journal dirs are pruned
-by age on startup. This is also the migration path if a future version mishandles a user's existing
-file.
+write, which is not worth it while a single instance holds the lifetime lock. Both are scheduled
+(M2b, M7) rather than forgotten — `current step.md` tracks them.
 
 **Reversibility:** before any integration write, `IntegrationApplier` copies each pre-image into
 `journal/<op-id>/` with a manifest. "Undo last change" replays it backwards. Journal dirs are pruned
@@ -384,9 +380,24 @@ serializable and testable; `integration` never talks to `ui`, so it can be reuse
 | M5 | Shell integration | wrapper + `~/.local/bin` symlink; PATH presence probed and reported, never assumed |
 | M6 | Health checks + repair | broken registrations surface in the table with a repair action |
 | M7 | Reversibility | undo restores pre-images byte-for-byte; journal pruned |
-| M8 | Packaging | `jpackage --type app-image` producing a rootless directory; optional `.deb` built by a maintainer |
+| M8 ✅ | Packaging | `./build.sh package` produces a relocatable app-image with a `java.base` runtime; nine checks run against the packaged launcher, including the exit-3 guard with the holder on the bundled runtime |
 
 Each milestone is shippable and testable headless except M4's visual check.
+
+**Packaging (M8):** `./build.sh package` runs `jlink --add-modules java.base` and hands the result to
+`jpackage --type app-image`, so the artifact carries its own runtime and needs no JDK on the target
+machine. It then verifies the artifact instead of trusting `jpackage`'s exit code: the launcher is
+run under `env -i` with only `PATH`, `HOME` and the `XDG_*` variables (the environment a desktop
+launcher provides), the settings path it echoes must be inside the sandbox, created directories must
+be `0700`, and a second instance must exit `3` while another process holds the lock. That last check
+executes the test harness on the **bundled** runtime, which is what keeps `RUNTIME_MODULES` honest —
+a module missing from the image fails the build here rather than on a user's machine. The third
+encoding option (`-Dstdout.encoding=UTF-8`) exists because a locale-less launcher otherwise mangles
+the em dash in the banner.
+
+`.deb` output stays optional and maintainer-built: it installs under `/opt/userspace` with root,
+which contradicts the premise of a rootless tool, so it is a distribution channel and not the
+recommended way to run UserSpace.
 
 **Test strategy (as built):** `./build.sh test` compiles `src/main` and `src/test` and runs
 `org.uspace.test.TestMain`, a ~120-line harness with named cases, assertion helpers and a skip
